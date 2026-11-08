@@ -12,6 +12,73 @@ local cookie = host.storage_get(COOKIE_KEY)
 local qr_cookie = nil
 local account_user = nil
 local favorite_ids = nil
+local favorite_songs = nil
+local song_cache = {}
+local song_cache_order = {}
+local playlist_ids_cache = {}
+local playlist_songs_cache = {}
+local playlist_cache_order = {}
+
+local SONG_CACHE_TTL = 15 * 60 * 1000
+local PLAYLIST_CACHE_TTL = 10 * 60 * 1000
+local SONG_CACHE_LIMIT = 6000
+local PLAYLIST_CACHE_LIMIT = 4
+
+local function clear_playlist_cache()
+  song_cache = {}
+  song_cache_order = {}
+  playlist_ids_cache = {}
+  playlist_songs_cache = {}
+  playlist_cache_order = {}
+  favorite_songs = nil
+end
+
+local function cache_song(id, value)
+  local key = tostring(id)
+  if not song_cache[key] then
+    local known = false
+    for _, existing in ipairs(song_cache_order) do
+      if existing == key then known = true; break end
+    end
+    if not known then table.insert(song_cache_order, key) end
+  end
+  song_cache[key] = { value = value, time = host.now() }
+  while #song_cache_order > SONG_CACHE_LIMIT do
+    local old = table.remove(song_cache_order, 1)
+    if old then song_cache[old] = nil end
+  end
+end
+
+local function cached_song(id)
+  local key = tostring(id)
+  local entry = song_cache[key]
+  if entry and host.now() - entry.time <= SONG_CACHE_TTL then return entry.value end
+  if entry then song_cache[key] = nil end
+  return nil
+end
+
+local function cache_playlist_songs(id, songs)
+  local key = tostring(id)
+  playlist_songs_cache[key] = { songs = songs, time = host.now() }
+  local order = {}
+  for _, value in ipairs(playlist_cache_order) do
+    if value ~= key then table.insert(order, value) end
+  end
+  table.insert(order, key)
+  while #order > PLAYLIST_CACHE_LIMIT do
+    local old = table.remove(order, 1)
+    if old then playlist_songs_cache[old] = nil end
+  end
+  playlist_cache_order = order
+end
+
+local function cached_playlist_songs(id)
+  local key = tostring(id)
+  local entry = playlist_songs_cache[key]
+  if entry and host.now() - entry.time <= PLAYLIST_CACHE_TTL then return entry.songs end
+  if entry then playlist_songs_cache[key] = nil end
+  return nil
+end
 
 local function compact_cookie(value)
   return value and host.cookie_compact(value) or nil
@@ -185,7 +252,7 @@ function M.login_cookie(value)
     host.storage_set(COOKIE_KEY, previous)
     return nil
   end
-  favorite_ids=nil
+  favorite_ids=nil; favorite_songs=nil; clear_playlist_cache()
   host.storage_set(COOKIE_KEY, cookie)
   return result
 end
@@ -194,7 +261,7 @@ local function login_result(body)
   local account=body.account or (body.data and body.data.account)
   if not profile and not account then return nil end
   account_user = {id=(profile and profile.userId) or (account and account.id), name=(profile and profile.nickname) or (account and account.userName) or "网易云用户", avatarUrl=profile and profile.avatarUrl}
-  favorite_ids=nil
+  favorite_ids=nil; favorite_songs=nil; clear_playlist_cache()
   return account_user
 end
 function M.login_password(account, password)
@@ -234,13 +301,14 @@ function M.qr_check(key)
       -- the scanned state so it does not mistake this for an expired key.
       return 802
     end
-    cookie=qr_cookie; account_user=nil; favorite_ids=nil; host.storage_set(COOKIE_KEY,cookie)
+    cookie=qr_cookie; account_user=nil; favorite_ids=nil; favorite_songs=nil; clear_playlist_cache(); host.storage_set(COOKIE_KEY,cookie)
     return 803
   end
   return code
 end
 function M.logout()
-  cookie = nil; qr_cookie=nil; account_user=nil; favorite_ids=nil
+  cookie = nil; qr_cookie=nil; account_user=nil; favorite_ids=nil; favorite_songs=nil
+  clear_playlist_cache()
   host.storage_set(COOKIE_KEY, nil)
   return true
 end
@@ -297,53 +365,108 @@ function M.playlists(limit, offset)
   for _, value in ipairs(body.playlist or {}) do table.insert(out, playlist(value)) end
   return out
 end
-function M.playlist(id)
-  local body=request("/api/v6/playlist/detail", {id=id, n=100000, s=8}, "eapi"); return playlist(body.playlist)
+local function playlist_track_ids(value)
+  local ids = {}
+  for _, track in ipairs(value.trackIds or {}) do table.insert(ids, track.id) end
+  if #ids == 0 then
+    for _, track in ipairs(value.tracks or {}) do table.insert(ids, track.id) end
+  end
+  return ids
 end
+
+local function playlist_ids(id)
+  local key = tostring(id)
+  local entry = playlist_ids_cache[key]
+  if entry and host.now() - entry.time <= PLAYLIST_CACHE_TTL then return entry.ids end
+  local body = request("/api/v6/playlist/detail", {id=id, n=0, s=0}, "eapi")
+  local value = body.playlist or {}
+  local ids = playlist_track_ids(value)
+  if #ids == 0 then
+    body = request("/api/v6/playlist/detail", {id=id, n=100000, s=0}, "eapi")
+    value = body.playlist or {}
+    ids = playlist_track_ids(value)
+  end
+  playlist_ids_cache[key] = { ids = ids, time = host.now() }
+  return ids
+end
+
 local function detail_songs(ids)
   if #ids == 0 then return {} end
-  local spec={}; for _,id in ipairs(ids) do table.insert(spec,{id=tonumber(id)}) end
-  local body=request("/api/v3/song/detail", {c=encode(spec)}, "api")
-  local by_id={}; for _,value in ipairs(body.songs or {}) do by_id[tostring(value.id)] = value end
-  local out={}; for _,id in ipairs(ids) do
-    local value=by_id[tostring(id)]; if value then table.insert(out,song(value)) end
+  local missing = {}
+  for _, id in ipairs(ids) do
+    if not cached_song(id) then table.insert(missing, id) end
+  end
+  local chunk_size = 1000
+  local missing_count = #missing
+  local start = 1
+  while start <= missing_count do
+    local finish = math.min(missing_count, start + chunk_size - 1)
+    local spec = {}
+    for i = start, finish do table.insert(spec, {id=tonumber(missing[i])}) end
+    local body = request("/api/v3/song/detail", {c=encode(spec)}, "api")
+    for _, value in ipairs(body.songs or {}) do cache_song(value.id, song(value)) end
+    start = finish + 1
+  end
+  local out = {}
+  for _, id in ipairs(ids) do
+    local value = cached_song(id); if value then table.insert(out, value) end
   end
   return out
 end
+
+function M.playlist(id)
+  local body=request("/api/v6/playlist/detail", {id=id, n=0, s=8}, "eapi")
+  local value=body.playlist or {}
+  local ids=playlist_track_ids(value)
+  if #ids > 0 then playlist_ids_cache[tostring(id)] = {ids=ids, time=host.now()} end
+  return playlist(value)
+end
+
 function M.playlist_songs(id, limit, offset)
-  local body=request("/api/v6/playlist/detail", {id=id, n=100000, s=0}, "eapi")
-  local value=body.playlist or {}; local ids={}
-  if value.trackIds and #value.trackIds > 0 then
-    for _,track in ipairs(page(value.trackIds,limit or 100,offset)) do table.insert(ids,track.id) end
-    return detail_songs(ids)
+  local requested_limit = limit or 100
+  local cached = cached_playlist_songs(id)
+  if cached then return page(cached, requested_limit, offset) end
+  local ids = playlist_ids(id)
+  -- A full playlist view starts at offset 0 with pages of 100. Fetch the
+  -- metadata of the whole list once, then every following page is local.
+  -- Small one-off lookups (for example a radio seed) keep the old page cost.
+  if (offset or 0) == 0 and requested_limit >= 100 then
+    local out = detail_songs(ids)
+    cache_playlist_songs(id, out)
+    return page(out, requested_limit, offset)
   end
-  local out={}; for _,track in ipairs(page(value.tracks or {},limit or 100,offset)) do table.insert(out,song(track)) end
-  return out
+  return detail_songs(page(ids, requested_limit, offset))
 end
 function M.create_playlist(name, is_public)
-  local body=request("/api/playlist/create", {name=name, privacy=is_public and 0 or 10, type="NORMAL"}, "weapi"); return playlist(body.playlist or {id=body.id,name=name})
+  local body=request("/api/playlist/create", {name=name, privacy=is_public and 0 or 10, type="NORMAL"}, "weapi"); clear_playlist_cache(); return playlist(body.playlist or {id=body.id,name=name})
 end
 function M.add_to_playlist(id, songs)
   local ids={}; for _, value in ipairs(songs or {}) do table.insert(ids, tonumber(value)) end
-  return request("/api/playlist/manipulate/tracks", {op="add", pid=id, trackIds=encode(ids), imme="true"}, "weapi")
+  local body=request("/api/playlist/manipulate/tracks", {op="add", pid=id, trackIds=encode(ids), imme="true"}, "weapi")
+  clear_playlist_cache()
+  return body
 end
 function M.remove_from_playlist(id, indexes)
   -- NetEase accepts IDs only. Resolve the current order first so duplicate rows remain safe.
   local values=M.playlist_songs(id, 1000, 0); local ids={}; for _, index in ipairs(indexes or {}) do if values[index+1] then table.insert(ids, values[index+1].id) end end
-  return request("/api/playlist/manipulate/tracks", {op="del", pid=id, trackIds=encode(ids), imme="true"}, "weapi")
+  local body=request("/api/playlist/manipulate/tracks", {op="del", pid=id, trackIds=encode(ids), imme="true"}, "weapi")
+  clear_playlist_cache()
+  return body
 end
 function M.favorites(limit, offset)
   local result=account_user or M.session(); if not result then return {} end
   if favorite_ids == nil then
     local body=request("/api/song/like/get", {uid=result.id}, "eapi")
     favorite_ids=body.ids or {}
+    favorite_songs=nil
   end
-  return detail_songs(page(favorite_ids,limit or 100,offset))
+  if favorite_songs == nil then favorite_songs=detail_songs(favorite_ids) end
+  return page(favorite_songs,limit or 100,offset)
 end
 function M.set_favorite(id, favorite)
   local result=account_user or M.session(); if not result then error("Sign in required") end
   local body=request("/api/song/like", {trackId=id, userid=result.id, like=favorite}, "eapi")
-  favorite_ids=nil
+  favorite_ids=nil; favorite_songs=nil
   return body
 end
 function M.stream(id, quality)
