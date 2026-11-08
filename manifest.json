@@ -1,7 +1,7 @@
 {
   "id": "lazer.netease",
   "name": "网易云音乐",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "网易云音乐 Lua Gateway，支持登录、搜索、歌单、歌词、音频流和播放统计。",
   "author": "Illusion",
   "entry": "main.lua",

@@ -7,6 +7,7 @@ local EAPI_KEY = "e82ckenh8dichen8"
 local WEAPI_KEY = "0CoJUm6Qyw8W8jud"
 local EAPI_DOMAIN = "https://interfacepc.music.163.com"
 local WEB_DOMAIN = "https://music.163.com"
+local DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.1.29.205117"
 local cookie = host.storage_get(COOKIE_KEY)
 local qr_cookie = nil
 local account_user = nil
@@ -14,6 +15,43 @@ local favorite_ids = nil
 
 local function compact_cookie(value)
   return value and host.cookie_compact(value) or nil
+end
+
+-- NetEase returns QR/login session cookies both as Set-Cookie headers and as
+-- a raw Cookie string in the JSON `cookie` field (`NMTID=...; MUSIC_U=...;
+-- __csrf=...`). host.cookie_merge keeps only the first `;` segment of each
+-- line, so with NMTID first it drops MUSIC_U and the 803 confirmation can
+-- never become a signed-in session. Parse both shapes and keep every field.
+local function merge_cookie(previous, update)
+  local values = {}
+  local function trim(value)
+    value = string.gsub(value, "^[ \t]+", "")
+    return (string.gsub(value, "[ \t]+$", ""))
+  end
+  local function collect(text)
+    if type(text) ~= "string" then return end
+    text = string.gsub(text, "^[ \t]*[Cc]ookie:[ \t]*", "")
+    text = string.gsub(text, "\r", ";")
+    text = string.gsub(text, "\n", ";")
+    local start = 1
+    local text_length = string.len(text)
+    while start <= text_length + 1 do
+      local separator = string.find(text, ";", start, true)
+      local part = separator and string.sub(text, start, separator - 1) or string.sub(text, start)
+      local equals = string.find(part, "=", 1, true)
+      if equals and equals > 1 then
+        local name = trim(string.sub(part, 1, equals - 1))
+        local value = trim(string.sub(part, equals + 1))
+        if name ~= "" and value ~= "" then table.insert(values, name .. "=" .. value) end
+      end
+      if not separator then break end
+      start = separator + 1
+    end
+  end
+  collect(previous)
+  collect(update)
+  if #values == 0 then return nil end
+  return host.cookie_compact(table.concat(values, "; "))
 end
 
 local function form(fields)
@@ -34,7 +72,13 @@ local function request(path, payload, mode, domain, qr)
   local body = payload
   local endpoint = domain or (mode == "eapi" and EAPI_DOMAIN or WEB_DOMAIN)
   local upstream_path = string.gsub(path, "^/api", "")
-  local headers = { ["Content-Type"] = "application/x-www-form-urlencoded", ["Referer"] = WEB_DOMAIN .. "/", ["User-Agent"] = "Lazer Lua Gateway" }
+  local headers = {
+    ["Content-Type"] = "application/x-www-form-urlencoded",
+    ["Referer"] = WEB_DOMAIN .. "/",
+    ["Accept"] = "application/json",
+    ["Cache-Control"] = "no-cache",
+    ["User-Agent"] = mode == "api" and DESKTOP_UA or "Lazer Lua Gateway",
+  }
   local current_cookie = cookie
   if qr then current_cookie = qr_cookie end
   if current_cookie then headers["Cookie"] = current_cookie end
@@ -75,7 +119,7 @@ local function request(path, payload, mode, domain, qr)
   local response = host.http({url=endpoint, method="POST", headers=headers, body=form(body)})
   local set_cookie = response.headers and (response.headers["set-cookie"] or response.headers["Set-Cookie"])
   if set_cookie then
-    local response_cookie = host.cookie_merge(current_cookie, set_cookie)
+    local response_cookie = merge_cookie(current_cookie, set_cookie)
     if response_cookie then
       if qr then qr_cookie = response_cookie
       else cookie = response_cookie; host.storage_set(COOKIE_KEY, cookie) end
@@ -84,8 +128,8 @@ local function request(path, payload, mode, domain, qr)
   if response.status < 200 or response.status >= 300 then error("HTTP " .. tostring(response.status)) end
   local value = json(response.body or "{}")
   if value.cookie then
-    if qr then qr_cookie = host.cookie_merge(qr_cookie, value.cookie)
-    else cookie = host.cookie_merge(cookie, value.cookie) or cookie; host.storage_set(COOKIE_KEY, cookie) end
+    if qr then qr_cookie = merge_cookie(qr_cookie, value.cookie)
+    else cookie = merge_cookie(cookie, value.cookie) or cookie; host.storage_set(COOKIE_KEY, cookie) end
   end
   if value.code and value.code ~= 200 and value.code ~= 803 and value.code ~= 802 and value.code ~= 801 and value.code ~= 800 and value.code ~= 8821 then error("Gateway code " .. tostring(value.code)) end
   return value
@@ -119,7 +163,8 @@ end
 
 function M.session()
   if not cookie then return nil end
-  local body = request("/api/w/nuser/account/get", {}, "weapi")
+  local ok, body = pcall(request, "/api/w/nuser/account/get", {}, "weapi")
+  if not ok then return nil end
   local data = body.data or body
   local profile = data.profile or body.profile
   local account = data.account or body.account
@@ -170,6 +215,9 @@ function M.send_captcha(phone)
   return request("/api/middle/captcha/sent/v1", {ctcode=86, secrete="music_middleuser_pclogin", cellphone=phone, scene=0}, "eapi")
 end
 function M.qr_key()
+  -- A new QR key must mint a fresh anonymous session. Reusing a previous
+  -- scan's NMTID/MUSIC_U binds the new key to a session the phone cannot see.
+  qr_cookie = nil
   local body=request("/api/login/qrcode/unikey", {type=3}, "api", nil, true)
   return body.unikey or (body.data and body.data.unikey) or ""
 end
@@ -178,11 +226,18 @@ function M.qr_url(key)
 end
 function M.qr_check(key)
   local body=request("/api/login/qrcode/client/login", {key=key, type=3, secureCaptcha=""}, "api", nil, true)
-  if body.code == 803 then
+  local code=tonumber(body.code) or 801
+  if code == 803 then
+    if not qr_cookie or not host.cookie_field(qr_cookie, "MUSIC_U") then
+      -- The key is spent at this point. Report success only when the poll
+      -- actually installed the session cookie; otherwise keep the client in
+      -- the scanned state so it does not mistake this for an expired key.
+      return 802
+    end
     cookie=qr_cookie; account_user=nil; favorite_ids=nil; host.storage_set(COOKIE_KEY,cookie)
     return 803
   end
-  return body.code or 801
+  return code
 end
 function M.logout()
   cookie = nil; qr_cookie=nil; account_user=nil; favorite_ids=nil
