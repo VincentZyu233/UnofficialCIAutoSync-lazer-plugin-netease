@@ -427,18 +427,18 @@ local function content_type(suffix)
   return "audio/" .. suffix
 end
 
-function M.stream(id, quality)
-  local song_id = models.number(id, 0)
-  if song_id <= 0 then error("Gateway code 70", 0) end
-  local bitrate = config.quality[models.text(quality)]
-  if bitrate == nil then bitrate = config.quality.high end
-  local body = transport.request("/api/song/enhance/player/url", {
-    ids = "[" .. tostring(song_id) .. "]", br = bitrate,
-  }, "weapi")
-  local rows = models.list(body.data)
-  local value = rows[1]
+-- A locked song answers with a preview. No lower tier unlocks it, so the ladder
+-- stops instead of spending three more requests on the same answer.
+local STREAM_LOCKED = {}
+
+local function stream_result(value)
   local url = value ~= nil and models.https(value.url) or nil
-  if url == nil or url == "" then error("Gateway code 70", 0) end
+  if url == nil or url == "" then return nil end
+  -- A locked song still answers with 200 and a 30 second preview. Playing it
+  -- looks like a broken player that stops mid-song, so it is reported as
+  -- unavailable and the host skips the track instead. A "preview" badge would
+  -- need a protocol field the host does not have yet.
+  if value.freeTrialInfo ~= nil then return STREAM_LOCKED end
   local suffix = models.text(value.type)
   local result = {
     url = url,
@@ -454,6 +454,34 @@ function M.stream(id, quality)
   local size = models.number(value.size, 0)
   if size > 0 then result.size = size end
   return result
+end
+
+-- An account without the requested tier gets an empty url for that br, which is
+-- the normal case rather than an error. Asking again for the next lower tier
+-- here keeps the host queue free: the app used to spend up to four serial calls
+-- per track on this ladder, and a user skipping through a queue paid for all of
+-- them before the next song could even be resolved.
+local STREAM_LADDER = { 999000, 320000, 192000, 128000 }
+
+function M.stream(id, quality)
+  local song_id = models.number(id, 0)
+  if song_id <= 0 then error("Gateway code 70", 0) end
+  local bitrate = config.quality[models.text(quality)]
+  if bitrate == nil then bitrate = config.quality.high end
+  local attempts = { bitrate }
+  for _, lower in ipairs(STREAM_LADDER) do
+    if lower < bitrate then attempts[#attempts + 1] = lower end
+  end
+  for _, br in ipairs(attempts) do
+    local body = transport.request("/api/song/enhance/player/url", {
+      ids = "[" .. tostring(song_id) .. "]", br = br,
+    }, "weapi")
+    local rows = models.list(body.data)
+    local result = stream_result(rows[1])
+    if result == STREAM_LOCKED then error("Gateway code 70", 0) end
+    if result ~= nil then return result end
+  end
+  error("Gateway code 70", 0)
 end
 
 local function lyric_text(value)
