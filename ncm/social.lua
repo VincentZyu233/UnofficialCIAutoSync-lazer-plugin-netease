@@ -92,51 +92,87 @@ local function room_result(body)
   return result
 end
 
+local function room_required(args)
+  local room = models.text(models.field(args, "roomId", "roomid"))
+  if room == "" or room == "0" then error("Gateway code 400", 0) end
+  return room
+end
+
+local function room_send(path, payload, mode)
+  mode = mode or "eapi"
+  return room_result(transport.request(path, payload, mode, { mobile = mode == "eapi" }))
+end
+
 function M.listen_together(operation, args)
   args = args or {}
   local name = models.text(operation)
-  local path
-  local payload
-  if name == "create" then
-    path = "/api/listen/together/room/create"
-    payload = { refer = "songplay_more" }
-  elseif name == "join" then
-    path = "/api/listen/together/play/invitation/accept"
-    payload = {
+  if name == "create" or name == "createMulti" then
+    -- A room created from the playing track is what the APK share sheet does;
+    -- without a song id the plain create route is all the service needs.
+    local song = models.text(args.songId)
+    if name == "createMulti" and song ~= "" and song ~= "0" then
+      local payload = {
+        type = 0,
+        songId = models.number(song, song),
+        ["from"] = "CREATE",
+        playedTime = models.number(args.playedTime, 0),
+        checkToken = "",
+      }
+      local next_ids = args.nextSongIds
+      if type(next_ids) == "table" and #next_ids > 0 then payload.nextSongIds = next_ids end
+      return room_send("/api/listen/together/multi/room/create", payload)
+    end
+    return room_send("/api/listen/together/room/create", { refer = "songplay_more" })
+  end
+  if name == "status" and models.text(args.roomId) == "" then
+    -- No room id: ask the service which room the account is still in, so a
+    -- restarted client recovers a session it never left.
+    return room_send("/api/listen/together/status/get", {}, "weapi")
+  end
+  local room = room_required(args)
+  if name == "join" then
+    return room_send("/api/listen/together/play/invitation/accept", {
       refer = "inbox_invite",
-      roomId = args.roomId,
+      roomId = room,
       inviterId = args.inviterId,
-    }
+    })
   elseif name == "status" then
-    path = "/api/listen/together/room/check"
-    payload = { roomId = args.roomId }
+    return room_send("/api/listen/together/room/check", { roomId = room })
   elseif name == "leave" then
-    path = "/api/listen/together/end/v2"
-    payload = { roomId = args.roomId }
+    return room_send("/api/listen/together/end/v2", { roomId = room })
   elseif name == "heartbeat" then
-    path = "/api/listen/together/heartbeat"
     local song = models.text(args.songId)
     if song == "" then song = "0" end
-    payload = {
-      roomId = args.roomId,
+    local progress = models.number(args.progress, 0)
+    if progress < 0 then progress = 0 end
+    return room_send("/api/listen/together/heartbeat", {
+      roomId = room,
       songId = song,
-      playStatus = models.text(args.playStatus),
-      progress = models.number(args.progress, 0),
+      playStatus = models.text(args.playStatus) == "PAUSE" and "PAUSE" or "PLAY",
+      progress = progress,
       playlistVersion = "[]",
-    }
+    })
   elseif name == "command" then
-    path = "/api/listen/together/play/command/report"
     local user = account.require_user()
     local command = type(args.command) == "table" and args.command or {}
     command.userId = models.number(user.id, 0)
     command.ignoreUserId = { command.userId }
     command.serverSeq = 0
-    payload = { roomId = args.roomId, commandInfo = host.json_encode(command) }
-  else
-    error("unsupported room operation", 0)
+    if command.targetSongId ~= nil then command.targetSongId = models.text(command.targetSongId) end
+    if command.formerSongId ~= nil then command.formerSongId = models.text(command.formerSongId) end
+    return room_send("/api/listen/together/play/command/report", {
+      roomId = room,
+      commandInfo = host.json_encode(command),
+    })
+  elseif name == "syncPlaylist" then
+    return room_send("/api/listen/together/sync/playlist/get", { roomId = room })
+  elseif name == "syncList" then
+    return room_send("/api/listen/together/sync/list/command/report", {
+      roomId = room,
+      playlistParam = args.playlistParam or "[]",
+    })
   end
-  local body = transport.request(path, payload, "eapi", { mobile = true })
-  return room_result(body)
+  error("unsupported room operation", 0)
 end
 
 return M

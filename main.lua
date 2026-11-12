@@ -146,12 +146,11 @@ local function failure(message)
   if code == 301 or code == 302 or code == 401 or code == 403 then
     code = 40
     status = 401
-  elseif code == -460 or code == 406 then
-    -- NetEase's risk-control answers, which the client backs off on.
-    code = nil
+  elseif code == -460 or code == 406 or code == 429 or status == 429 then
+    -- NetEase's risk-control and rate-limit answers. The host reports the HTTP
+    -- status, so a 429 stays a 429 instead of a bare application code.
+    if code == -460 or code == 406 then code = nil end
     status = 429
-  elseif status == 429 then
-    code = nil
   end
   return { error = { code = code, httpStatus = status, reason = "Request failed" } }
 end

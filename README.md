@@ -38,7 +38,7 @@ ncm/social.lua       歌曲评论、评论点赞、一起听房间
 | 喜欢 | `favorites` `setFavorite` | 喜欢列表的 id 顺序在内存缓存 5 分钟，写入后立即失效 |
 | 播放 | `stream` `lyrics` `scrobble` `playStats` | 音质按 `original/high/medium/low` 取 999000/320000/192000/128000；`stream` 在一次调用内逐级降档，只有全部档位都没有地址时才返回 `code = 70`；逐字歌词与翻译分别返回 |
 | 推荐 | `recommendations` `homeFeed` `charts` `radio` | 首页含精选、新碟、每日推荐、猜你喜欢；排行榜最多 8 个榜；三种电台 |
-| 社交 | `comments` `setCommentLiked` `listenTogether` | 评论热评 + 最新、点赞；一起听 `create/join/status/leave/heartbeat/command` |
+| 社交 | `comments` `setCommentLiked` `listenTogether` | 评论热评 + 最新、点赞；一起听 `create/createMulti/join/status/leave/heartbeat/command`（可选 `syncPlaylist/syncList`） |
 
 分页约定：列表接口向服务端请求（或本地切出）`limit + 1` 行，客户端裁到 `limit` 并用收到的行数判断 `hasMore`。客户端不做裁剪的两处（`playStats`、`comments`）由插件自己保证每页行数和 `hasMore`。
 
@@ -64,6 +64,14 @@ Lua 抛出的错误在 `main.lua` 里被压成 `{error = {code, httpStatus, reas
 - weapi 请求体被 RSA 包裹，开发期的本地 mock 只能覆盖它的路径与可观察行为；真机冒烟测试需自行使用账号。
 - 评论分页使用服务端的 offset 语义；若服务端改为纯游标返回，缺失 `more` 时会退化为「整页即还有下一页」。
 - 歌词接口未返回逐字歌词时只提供逐行歌词与翻译。
+
+## 变更（1.3.0）
+
+- 一起听请求补上移动端身份：房间端点会同时校验 eapi 信封与 Cookie 里的客户端标识，只有桌面 `os/appver` 会被服务端拒绝。现在这些字段只作用于单次请求头，存储里的会话 Cookie 不受影响。
+- `status` 不带 `roomId` 时改走 `status/get`，客户端重启后可以取回仍在的房间；带 `roomId` 时仍走 `room/check`。
+- 补齐参考路由：`createMulti`（带当前曲目建房）、`syncPlaylist`、`syncList`；缺少 `roomId` 的房间操作直接报 `400`。
+- `command` 的 `targetSongId`/`formerSongId` 统一按字符串上报，与官方客户端的 `commandInfo` 一致。
+- `429` 保留为 `httpStatus = 429`，不再退化成没有状态的裸错误码。
 
 ## 变更（1.2.1）
 

@@ -169,7 +169,18 @@ function M.request(path, payload, mode, options)
     Referer = config.api .. "/",
     ["User-Agent"] = client.userAgent,
   }
-  if session_cookie ~= "" then headers.Cookie = session_cookie end
+  -- The room endpoints read the client identity from the Cookie as well as the
+  -- envelope, and reject the desktop os/appver pair there. These attributes are
+  -- request scoped: `session_cookie` stays untouched for the rotation below.
+  local request_cookie = session_cookie
+  if options.mobile then
+    local attributes = "os=" .. client.os .. "; appver=" .. client.appver
+    if client.versioncode ~= nil then
+      attributes = attributes .. "; versioncode=" .. client.versioncode
+    end
+    request_cookie = session_cookie ~= "" and (session_cookie .. "; " .. attributes) or attributes
+  end
+  if request_cookie ~= "" then headers.Cookie = request_cookie end
 
   local response = host.http({ url = url, method = "POST", headers = headers, body = body })
   if type(response) ~= "table" then error("INVALID_JSON", 0) end
