@@ -80,11 +80,29 @@ function M.https(value)
   return url
 end
 
+-- NetEase decorates editorial covers with a transform chain
+-- (`?imageView=1&thumbnail=800y800&enlarge=1%7C...&watermark...`). The client
+-- asks the CDN for its own rendition, and a client that rebuilds that chain
+-- produces a URL the service answers with 400, so hand out the plain image
+-- path and let the host size it.
+local function public_cover(url)
+  local question = string.find(url, "?", 1, true)
+  if question == nil then return url end
+  local query = string.lower(string.sub(url, question + 1))
+  if string.find(query, "imageview=", 1, true) ~= nil or
+      string.find(query, "watermark", 1, true) ~= nil then
+    return string.sub(url, 1, question - 1)
+  end
+  return url
+end
+
 -- Cover URLs only: unlike M.https this rejects numeric picture ids, which some
 -- legacy payloads put in `picUrl`.
 function M.image(value)
   if type(value) ~= "string" then return nil end
-  return M.https(value)
+  local url = M.https(value)
+  if url == nil then return nil end
+  return public_cover(url)
 end
 
 -- Returns `count` rows starting at `offset` (0 based). Callers that need the
