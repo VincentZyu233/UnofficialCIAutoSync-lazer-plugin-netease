@@ -211,14 +211,14 @@ local function heart_radio(seed, playlist_id, take)
     if ok and rows[1] ~= nil then song_id = models.number(rows[1].id, 0) end
   end
   if song_id <= 0 then return {} end
-  local body = transport.request("/api/playmode/intelligence/list", {
+  local ok, body = pcall(transport.request, "/api/playmode/intelligence/list", {
     songId = song_id,
     type = "fromPlayOne",
     playlistId = playlist_id,
     startMusicId = song_id,
     count = take,
   }, "eapi")
-  local rows = models.list(body.data)
+  local rows = ok and models.list(body.data) or {}
   local out = {}
   for index = 1, #rows do
     local item = rows[index]
@@ -232,7 +232,15 @@ local function heart_radio(seed, playlist_id, take)
       out[#out + 1] = models.song(value)
     end
   end
-  return models.window(out, take, 0)
+  if #out > 0 then return models.window(out, take, 0) end
+  -- Match the client gateway's fallback: a temporarily unavailable
+  -- intelligence endpoint must still leave the user with playable liked
+  -- tracks instead of an empty station.
+  if playlist_id ~= nil then
+    local fallback_ok, fallback = pcall(catalog.playlist_songs, playlist_id, take, 0)
+    if fallback_ok then return models.window(fallback, take, 0) end
+  end
+  return {}
 end
 
 -- 歌手电台: the artist's own top songs interleaved with a few similar artists,
