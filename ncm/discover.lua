@@ -12,8 +12,13 @@ local M = {}
 
 local function fetch(path, payload)
   local ok, body = pcall(transport.request, path, payload, "weapi")
-  if not ok then return nil end
-  return body
+  if ok and type(body) == "table" then return body end
+  -- A few discovery endpoints intermittently return an empty weapi body for
+  -- anonymous sessions. The same public route accepts the plain web envelope;
+  -- retrying it here keeps one flaky shelf from hiding the whole section.
+  local plain_ok, plain = pcall(transport.request, path, payload, "web")
+  if plain_ok and type(plain) == "table" then return plain end
+  return nil
 end
 
 local function rows_of(body, key, fallback_key)
@@ -50,6 +55,34 @@ local function song_rows(rows, unwrap)
     local song = type(value.song) == "table" and value.song or value
     return models.song(song)
   end)
+end
+
+-- The new-album endpoint is occasionally unavailable during a service-side
+-- rollout. Personalized new-song rows still carry the album identity and
+-- artwork, so retain a useful release shelf instead of dropping it entirely.
+local function albums_from_songs(rows)
+  local out = {}
+  local seen = {}
+  for index = 1, #rows do
+    local song = rows[index]
+    local id = models.text(song.albumId)
+    if id ~= "" and not seen[id] then
+      seen[id] = true
+      out[#out + 1] = {
+        id = id,
+        title = models.text(song.albumName),
+        artists = song.artists,
+        coverUrl = song.coverUrl,
+        year = nil,
+        publishTime = 0,
+        songCount = 0,
+        description = "",
+        releaseType = "",
+        subType = "",
+      }
+    end
+  end
+  return out
 end
 
 function M.home_feed()
@@ -98,6 +131,7 @@ function M.home_feed()
   local albums = models.map_rows(rows_of(fetch("/api/album/new", {
     area = "ALL", limit = 18, offset = 0, total = true,
   }), "albums"), models.album)
+  if #albums == 0 then albums = albums_from_songs(quick) end
   feed.albums = models.window(albums, 12, 0)
 
   -- 编辑精选: the service's editorial account, with the public high-quality
@@ -120,6 +154,7 @@ function M.home_feed()
       cat = "全部", limit = 12, lasttime = 0, total = true,
     }), "playlists"))
   end
+  if #editorial == 0 then editorial = top end
   feed.editorialPlaylists = models.window(editorial, 12, 0)
 
   if #feed.albums > 0 then
