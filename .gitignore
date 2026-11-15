@@ -1,0 +1,15 @@
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~
+
+# Node / JS
+node_modules/
+package-lock.json
+
+# Local temp
+temp/
+tmp/
+*.log

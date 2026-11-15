@@ -1,0 +1,68 @@
+name: Auto-Sync Upstream NetEase Plugin
+
+on:
+  schedule:
+    # 每天北京时间中午 12:00 (UTC 04:00) 自动检测轮询
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  check-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check and synchronize upstream release
+        id: sync
+        run: node scripts/sync_upstream.js
+
+      - name: Create Pull Request on update
+        if: steps.sync.outputs.has_update == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: upstream/bump-to-v${{ steps.sync.outputs.upstream_version }}
+          delete-branch: true
+          title: "chore(upstream): bump lazer.netease from ${{ steps.sync.outputs.current_version }} to ${{ steps.sync.outputs.upstream_version }}"
+          commit-message: "chore(upstream): bump lazer.netease from ${{ steps.sync.outputs.current_version }} to ${{ steps.sync.outputs.upstream_version }}"
+          body: |
+            ## 🔔 上游网易云插件更新检测
+
+            检测到官方插件市场发布了新版本！
+
+            | 属性 | 信息 |
+            | :--- | :--- |
+            | **插件 ID** | `lazer.netease` |
+            | **当前版本** | `${{ steps.sync.outputs.current_version }}` |
+            | **最新版本** | `${{ steps.sync.outputs.upstream_version }}` |
+            | **官方下载直链** | [lazer.netease.zip](${{ steps.sync.outputs.download_url }}) |
+            | **官方 SHA-256** | `${{ steps.sync.outputs.sha256 }}` |
+
+            ---
+
+            ### 🛡️ 保护机制说明
+            - 本次同步仅更新插件核心资产，本仓库的 `scripts/` 工具目录与 CI 配置受到严格白名单保护，未受任何更改。
+            
+            ### 🧪 建议本地验证步骤
+            ```bash
+            git fetch origin upstream/bump-to-v${{ steps.sync.outputs.upstream_version }}
+            git checkout upstream/bump-to-v${{ steps.sync.outputs.upstream_version }}
+            node scripts/check_yrc.js
+            ```
+            确认逐字歌词与 API 正常后即可合并本 PR。
+          labels: |
+            upstream-sync
+            dependencies
+          reviewers: VincentZyu233
