@@ -93,12 +93,3 @@ ncm/social.lua       歌曲评论、评论点赞、一起听房间
 | 播放 | `stream` `lyrics` `scrobble` `playStats` | 音质按 `original/high/medium/low` 取 999000/320000/192000/128000；`stream` 在一次调用内逐级降档，只有全部档位都没有地址时才返回 `code = 70`；逐字歌词与翻译分别返回 |
 | 推荐 | `recommendations` `homeFeed` `charts` `radio` | 首页含精选、新碟、每日推荐、猜你喜欢；排行榜最多 8 个榜；三种电台 |
 | 社交 | `comments` `setCommentLiked` `listenTogether` | 评论热评 + 最新、点赞；一起听 `create/createMulti/join/status/leave/heartbeat/command`（可选 `syncPlaylist/syncList`） |
-
-## 变更历史
-
-- **1.3.3**: 首页发现接口在 weapi 返回空响应时回退到公开 web 请求；新碟接口回退到推荐新歌专辑信息。
-- **1.3.2**: 心动模式回退到喜欢歌单曲目；编辑精选回退机制。
-- **1.3.1**: 封面 URL 去除 query 重写参数，避免 CDN 400。
-- **1.3.0**: 一起听接口补齐移动端身份标识与参考路由。
-- **1.2.1**: 音频流自动逐级降档，无版权歌曲报 `code = 70` 跳过。
-- **1.2.0**: 模块化重构为 `ncm/*`。
