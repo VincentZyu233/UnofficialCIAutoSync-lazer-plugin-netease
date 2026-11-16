@@ -149,6 +149,7 @@ function M.request(path, payload, mode, options)
   local client = client_of(options)
 
   if mode == "weapi" then
+    outgoing.e_r = false
     outgoing.csrf_token = store.csrf()
     url = config.api .. "/weapi" .. string.sub(path, 5)
     body = form_body(weapi_envelope(outgoing))
@@ -169,6 +170,9 @@ function M.request(path, payload, mode, options)
     Referer = config.api .. "/",
     ["User-Agent"] = client.userAgent,
   }
+  if mode == "weapi" and not options.mobile and not options.desktop then
+    headers["User-Agent"] = config.weapi_user_agent
+  end
   -- The room endpoints read the client identity from the Cookie as well as the
   -- envelope, and reject the desktop os/appver pair there. These attributes are
   -- request scoped: `session_cookie` stays untouched for the rotation below.

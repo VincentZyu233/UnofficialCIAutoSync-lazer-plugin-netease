@@ -509,6 +509,8 @@ function M.lyrics(id)
   local yrc = lyric_text(body.yrc)
   local translation = lyric_text(body.tlyric)
   local word_translation = lyric_text(body.ytlrc)
+  local romanization = lyric_text(body.rlyric)
+  local word_romanization = lyric_text(body.yromalrc)
   if body.pureMusic == true or body.nolyric == true then return {} end
   if lrc == "" and yrc == "" then
     local ok, fallback = pcall(transport.request, "/api/song/lyric", {
@@ -520,6 +522,8 @@ function M.lyrics(id)
       yrc = lyric_text(fallback.yrc)
       translation = lyric_text(fallback.tlyric)
       word_translation = lyric_text(fallback.ytlrc)
+      romanization = lyric_text(fallback.rlyric)
+      word_romanization = lyric_text(fallback.yromalrc)
     end
   end
   -- A missing lyric that is not flagged as instrumental stays retryable: the
@@ -532,6 +536,8 @@ function M.lyrics(id)
   if word_translation ~= "" and word_translation ~= translation then
     entry.wordTranslation = word_translation
   end
+  if romanization ~= "" then entry.romanization = romanization end
+  if word_romanization ~= "" then entry.wordRomanization = word_romanization end
   return { entry }
 end
 
