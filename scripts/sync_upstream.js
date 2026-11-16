@@ -47,6 +47,38 @@ function setGithubOutput(key, value) {
   console.log(`[Action Output] ${key}=${value}`);
 }
 
+function extractZip(zipPath, targetDir) {
+  // Linux / macOS: Prefer native unzip, fallback to python3 zipfile
+  if (process.platform !== 'win32') {
+    try {
+      execSync(`unzip -q -o "${zipPath}" -d "${targetDir}"`, { stdio: 'inherit' });
+      return;
+    } catch (err) {
+      console.warn(`unzip command failed (${err.message}), falling back to python3...`);
+    }
+
+    try {
+      execSync(`python3 -c "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "${zipPath}" "${targetDir}"`, { stdio: 'inherit' });
+      return;
+    } catch (err) {
+      console.warn(`python3 extraction failed (${err.message}), falling back to tar...`);
+    }
+  }
+
+  // Windows: bsdtar natively supports zip; fallback to PowerShell Expand-Archive
+  try {
+    execSync(`tar -xf "${zipPath}" -C "${targetDir}"`, { stdio: 'inherit' });
+    return;
+  } catch (err) {
+    if (process.platform === 'win32') {
+      console.warn(`tar extraction failed (${err.message}), falling back to PowerShell Expand-Archive...`);
+      execSync(`powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force"`, { stdio: 'inherit' });
+      return;
+    }
+    throw err;
+  }
+}
+
 async function main() {
   console.log('=== Checking for Upstream NetEase Plugin Updates ===');
 
@@ -110,7 +142,7 @@ async function main() {
   fs.writeFileSync(tempZipPath, zipBuf);
 
   console.log('Unpacking upstream zip...');
-  execSync(`tar -xf "${tempZipPath}" -C "${tempExtractDir}"`, { stdio: 'inherit' });
+  extractZip(tempZipPath, tempExtractDir);
   fs.rmSync(tempZipPath);
 
   // Protected paths that MUST NEVER be overwritten or deleted
