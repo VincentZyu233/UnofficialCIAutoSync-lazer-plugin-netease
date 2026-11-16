@@ -19,14 +19,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: 20
+          python-version: '3.x'
 
       - name: Check and synchronize upstream release
         id: sync
-        run: node scripts/sync_upstream.js
+        run: python scripts/sync_upstream.py
 
       - name: Create Pull Request on update
         if: steps.sync.outputs.has_update == 'true'
