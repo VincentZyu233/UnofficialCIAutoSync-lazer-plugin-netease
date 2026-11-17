@@ -124,6 +124,14 @@ function M.require_user()
   return store.user
 end
 
+-- The account this VM already verified, without asking the service again.
+--
+-- Playback events arrive while the audio lane is busy; a background report
+-- must not spend a round trip deciding whether it is signed in.
+function M.cached_user()
+  return store.user
+end
+
 local function adopt_login(body)
   local user = profile_of(body)
   if user == nil then
@@ -140,6 +148,22 @@ end
 local function restore(previous_cookie, previous_user)
   store.set_cookie(previous_cookie)
   store.user = previous_user
+end
+
+-- A failed login may still rotate cookies in its HTTP response. Restore the
+-- verified session before reporting the status so another account attempt
+-- cannot silently sign the current listener out.
+local function request_login(path, payload)
+  local previous_cookie = store.cookie()
+  local previous_user = store.user
+  local ok, body = pcall(transport.request, path, payload, "weapi")
+  if not ok then
+    restore(previous_cookie, previous_user)
+    error(body, 0)
+  end
+  local user = adopt_login(body)
+  if user == nil then restore(previous_cookie, previous_user) end
+  return user
 end
 
 function M.login_cookie(value)
@@ -197,8 +221,8 @@ function M.login_password(account, password)
   if phone ~= nil then
     path = "/api/w/login/cellphone"
     payload = {
-      type = 1, https = "true", phone = phone, countrycode = "86",
-      remember = "true", password = md5(secret),
+      type = "1", https = "true", phone = phone, countrycode = "86",
+      remember = "true", password = md5(secret), secureCaptcha = "",
     }
   else
     path = "/api/w/login"
@@ -207,29 +231,26 @@ function M.login_password(account, password)
       password = md5(secret), rememberLogin = "true",
     }
   end
-  local ok, body = pcall(transport.request, path, payload, "weapi")
-  if not ok then return nil end
-  return adopt_login(body)
+  return request_login(path, payload)
 end
 
-function M.login_captcha(phone, captcha)
-  local number = models.trim(phone)
+function M.login_captcha(phone, captcha, secure_captcha)
+  local number = phone_of(models.trim(phone))
   local code = models.trim(captcha)
-  if number == "" or code == "" then return nil end
-  local ok, body = pcall(transport.request, "/api/w/login/cellphone", {
-    type = 1, https = "true", phone = number, countrycode = "86",
-    remember = "true", captcha = code,
-  }, "weapi")
-  if not ok then return nil end
-  return adopt_login(body)
+  if number == nil or code == "" then return nil end
+  return request_login("/api/w/login/cellphone", {
+    type = "1", https = "true", phone = number, countrycode = "86",
+    remember = "true", captcha = code, secureCaptcha = models.trim(secure_captcha),
+  })
 end
 
 function M.send_captcha(phone)
-  local number = models.trim(phone)
-  if number == "" then return nil end
-  transport.request("/api/middle/captcha/sent/v1", {
-    ctcode = "86", secrete = "music_middleuser_pclogin", cellphone = number, scene = 0,
-  }, "eapi")
+  local number = phone_of(models.trim(phone))
+  if number == nil then error("Gateway code 400", 0) end
+  -- Keep the endpoint and encryption aligned with api-enhanced's captcha_sent.
+  transport.request("/api/sms/captcha/sent", {
+    ctcode = "86", secrete = "music_middleuser_pclogin", cellphone = number,
+  }, "weapi")
   return true
 end
 

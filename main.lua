@@ -19,6 +19,7 @@
 local account = require("ncm.account")
 local catalog = require("ncm.catalog")
 local discover = require("ncm.discover")
+local models = require("ncm.models")
 local social = require("ncm.social")
 
 local CAPABILITIES = {
@@ -59,12 +60,120 @@ local function describe()
   }
 end
 
+-- The host hands out composite ids (`netease:song:123`) in every model it
+-- builds. The service only knows the tail, so the numeric part is recovered
+-- after the last separator; a plain number is returned unchanged.
+local function remote_id(value)
+  local text = models.text(value)
+  if text == "" then return "" end
+  local last = nil
+  local at = 1
+  while true do
+    local found = string.find(text, ":", at, true)
+    if found == nil then break end
+    last = found
+    at = found + 1
+  end
+  if last ~= nil then text = string.sub(text, last + 1) end
+  return text
+end
+
+local function song_number(value)
+  local parsed = tonumber(remote_id(value))
+  if parsed == nil then return 0 end
+  return math.floor(parsed)
+end
+
+-- ---------------------------------------------------------------------------
+-- Settings and background play activity
+-- ---------------------------------------------------------------------------
+
+-- Values the host persists for this plugin. The host hands the stored value
+-- back from `add_setting`, so a fresh VM starts with what the listener chose.
+local settings = { syncPlayActivity = false }
+
+-- The last activity report, kept so a paused player and a paused plugin do not
+-- turn into one request every time the position is broadcast.
+local activity = { at = 0, song = "" }
+
+local function register_settings()
+  -- `add_setting` needs the settings extension; an older host without it must
+  -- not break the gateway, so the registration is attempted, not required.
+  local ok, value = pcall(host.add_setting, {
+    id = "syncPlayActivity",
+    type = "toggle",
+    title = "同步播放活动",
+    subtitle = "把播放活动同步到账号的听歌排行与好友动态。开启后会持续上报播放，账号存在被风控警告的风险。",
+    -- The warning is repeated as the value the row starts from, so a listener
+    -- who never opens the settings page is never opted in.
+    default = false,
+  })
+  if ok and value == true then settings.syncPlayActivity = true end
+end
+
+pcall(register_settings)
+
+local function settings_changed(args)
+  if type(args) ~= "table" then return false end
+  if args.id ~= "syncPlayActivity" then return false end
+  settings.syncPlayActivity = args.value == true
+  return true
+end
+
+-- Reports the playing track as an account activity, at most once every 25
+-- seconds and only while the listener opted in and the account is signed in.
+--
+-- The weblog the desktop client posts is the same surface: one row per play,
+-- carrying the song, how far it got and how long it is. Reaching it in a burst
+-- is what the service reads as automation, which is why the cadence and the
+-- opt-in both live here instead of in the caller.
+local function report_activity(args)
+  if not settings.syncPlayActivity then return false end
+  if account.cached_user() == nil then return false end
+  local track = type(args.track) == "table" and args.track or args
+  local song = song_number(track.id)
+  if song <= 0 then return false end
+  local now = host.now()
+  local same = tostring(song) == activity.song
+  if same and now - activity.at < 25000 then return false end
+  if now - activity.at < 8000 then return false end
+  activity.at = now
+  activity.song = tostring(song)
+  local played = models.number(args.positionMs, models.number(args.position, 0))
+  local duration = models.number(args.durationMs, models.number(args.duration, 0))
+  local ok, value = pcall(social.play_activity, {
+    songId = song,
+    playedMs = played,
+    durationMs = duration,
+    action = "play",
+    source = "list",
+  })
+  if ok then return value end
+  return false
+end
+
+-- The host broadcasts playback changes to every enabled plugin. Reporting is
+-- fire-and-forget: a failed report is dropped, because a retry would arrive
+-- after the listener has already moved on.
+local function player_event(args)
+  if type(args) ~= "table" then return false end
+  local kind = models.text(args.type)
+  if kind ~= "track" and kind ~= "status" then return false end
+  if kind == "status" and models.text(args.state) ~= "playing" then return false end
+  return report_activity(args) == true
+end
+
 local operations = {
   describe = describe,
   session = function() return account.session() end,
+  settingChanged = function(args) return settings_changed(args) end,
+  setting_changed = function(args) return settings_changed(args) end,
+  playerEvent = function(args) return player_event(args) end,
+  player_event = function(args) return player_event(args) end,
+  playActivity = function(args) return social.play_activity(args) end,
   loginCookie = function(args) return account.login_cookie(args.cookie) end,
   loginPassword = function(args) return account.login_password(args.account or args.phone, args.password) end,
-  loginCaptcha = function(args) return account.login_captcha(args.phone, args.captcha) end,
+  loginCaptcha = function(args) return account.login_captcha(args.phone, args.captcha, args.secureCaptcha or args.sca) end,
   sendCaptcha = function(args) return account.send_captcha(args.phone) end,
   qrKey = function() return account.qr_key() end,
   qrUrl = function(args) return account.qr_url(args.key) end,
