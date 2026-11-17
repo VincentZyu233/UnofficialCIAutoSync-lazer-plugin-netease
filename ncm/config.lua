@@ -4,11 +4,18 @@ local M = {}
 
 M.api = "https://music.163.com"
 M.eapi_host = "https://interfacepc.music.163.com"
+-- The listen-together routes are served from the mobile gateway. It validates
+-- the envelope and the `os`/`appver` cookie attributes together, so a mobile
+-- identity has to reach the host that expects it: interfacepc answers those
+-- calls with a rejection instead of a room.
+M.mobile_eapi_host = "https://interface.music.163.com"
 M.client_log_host = "https://clientlog.music.163.com"
 
 M.weapi_key = "0CoJUm6Qyw8W8jud"
 M.eapi_key = "e82ckenh8dichen8"
 M.weapi_iv = "0102030405060708"
+M.weapi_user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " ..
+  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0"
 M.rsa_modulus = "e0b509f6259df8642dbc35662901477df22677ec152b5ff68ace615bb7b72515" ..
   "2b3ab17a876aea8a5aa76d2e417629ec4ee341f56135fccf695280104e0312ec" ..
   "bda92557c93870114af6c9d05c4f7f0c3685b7a46bee255932575cce10b424d8" ..
